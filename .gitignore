@@ -136,3 +136,12 @@ experimental/*
 checkpoints*
 **/tags
 dumps
+
+dict.txt
+glue_data/
+models/
+*.bpe
+encoder.json
+
+outputs/
+outputs-quant-baseline/

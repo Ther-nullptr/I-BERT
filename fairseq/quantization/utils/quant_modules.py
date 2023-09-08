@@ -8,7 +8,7 @@ import torch.multiprocessing as mp
 from torch.nn import Linear as _linear
 from torch.nn import Embedding as _Embedding
 from torch.nn import Module, Parameter
-from .quant_utils import *
+from quant_utils import *
 
 from fairseq.modules import LayerNorm
 from fairseq import utils
@@ -657,3 +657,59 @@ class IntSoftmax(Module):
         exp_int = floor_ste.apply(exp_int * factor / 2 ** (32 - self.output_bit))
         scaling_factor = 1 / 2 ** self.output_bit
         return exp_int * scaling_factor, scaling_factor
+    
+    
+class FP8LinearSoftmax(Module):
+    """
+    Class to quantize given Linear Softmax layer
+
+    Parameters:
+    ----------
+    output_bit : int
+        Bitwidth for the Softmax output.
+    quant_mode : 'none' or 'symmetric', default 'none'
+        The mode for quantization. 'none' for no quantization.
+    force_dequant : str, default 'none'
+        Force dequantize Softmax if either 'softmax' or 'nonlinear' is given.
+    """
+    def __init__(self,
+                 output_bit,
+                 quant_mode='none',
+                 force_dequant='none'):
+        super(FP8LinearSoftmax, self).__init__()
+        self.output_bit = output_bit
+        self.quant_mode = quant_mode
+        self.base = 2
+        self.x_th = torch.nn.Parameter(torch.tensor(math.log(448, self.base))) # define a value
+        self.x_th_ratio = 0.95
+        self.head_dim = 64
+        if force_dequant in ['nonlinear', 'softmax']:
+            logger.info("Force dequantize softmax")
+            self.quant_mode = 'none'
+
+
+    def forward(self, attn_weights: torch.Tensor, attn_scaling_factor, v, v_scaling_factor, validate):
+        # return a attn * v and attn * v scaling factor
+        # attn_weights: [batch_size * num_heads, seq_len, seq_len]
+        # v: [batch_size * num_heads, seq_len, head_dim]
+        if self.quant_mode == 'none':
+            attn_probs = utils.softmax(attn_weights, dim=-1, onnx_trace=False)
+            attn = torch.bmm(attn_probs, v)
+            return attn, None
+
+        assert self.quant_mode == 'symmetric', \
+                "unsupported quant mode: {}".format(self.quant_mode)
+
+        if validate: # just use the saved data
+            pass
+            
+        else: # get the x_th_ratio of data
+            attn_weights = attn_weights.view(-1, self.head_dim, attn_weights.shape[1], attn_weights.shape[2])
+            # (b * h, s, s) -> (b, h, s, s)
+            _, indices = attn_weights.topk(int(attn_weights.shape[3] * self.x_th_ratio), dim=-1)[0]
+            # reproduce the mask by indices, which has the save shape as attn_weights
+            attn_weight_sparse = torch.zeros_like(attn_weights)
+            
+            
+
+        return true_value, scaling_factor

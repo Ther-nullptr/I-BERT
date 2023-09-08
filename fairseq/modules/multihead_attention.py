@@ -411,14 +411,19 @@ class MultiheadAttention(nn.Module):
 
         if before_softmax:
             return attn_weights, v
+        
+        # print('attn_weights:', attn_weights.shape)
 
         attn_weights_float, attn_probs_scaling_factor = \
                 self.softmax(attn_weights, attn_weights_scaling_factor)
         attn_weights = attn_weights_float.type_as(attn_weights)
         attn_probs = self.dropout_module(attn_weights)
+        
+        # print('v:', v.shape)
 
         assert v is not None
         attn = torch.bmm(attn_probs, v) 
+        
         if q_scaling_factor is not None:
             # attn / attn_scaling_factor is integer
             attn_scaling_factor = q_scaling_factor * k_scaling_factor

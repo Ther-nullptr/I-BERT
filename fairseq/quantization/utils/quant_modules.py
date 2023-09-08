@@ -91,7 +91,7 @@ class QuantEmbedding(Module):
             ), None
 
         assert self.quant_mode == 'symmetric', \
-                "unsupported quant mode: {}".format(quant_mode)
+                "unsupported quant mode: {}".format(self.quant_mode)
 
         w = self.weight
         w_transform = w.data.detach()
@@ -252,7 +252,7 @@ class QuantAct(Module):
             return x_act, None
 
         assert self.quant_mode == 'symmetric', \
-                "unsupported quant mode: {}".format(quant_mode)
+                "unsupported quant mode: {}".format(self.quant_mode)
         
         x_min = self.x_min if specified_min is None else specified_min
         x_max = self.x_max if specified_max is None else specified_max
@@ -348,7 +348,7 @@ class QuantLinear(Module):
 
     	# x / prev_act_scaling_factor = int
         assert self.quant_mode == 'symmetric', \
-                "unsupported quant mode: {}".format(quant_mode)
+                "unsupported quant mode: {}".format(self.quant_mode)
 
         # assert that prev_act_scaling_factor is a scalar tensor
         # e.g. all input tensors have the same scalar factor
@@ -404,7 +404,7 @@ class IntLayerNorm(Module):
                  force_dequant='none'):
         super(IntLayerNorm, self).__init__()
         self.quant_mode = quant_mode
-        if force_dequant in ['nonlinear', 'layernorm']:
+        if force_dequant in ['nonlinear', 'layernorm', 'gelu+layernorm']:
             logger.info("Force dequantize layernorm")
             self.quant_mode = 'none'
         self.overflow_handling = overflow_handling
@@ -461,7 +461,7 @@ class IntLayerNorm(Module):
             return x, None
 
         assert self.quant_mode == 'symmetric', \
-                "unsupported quant mode: {}".format(quant_mode)
+                "unsupported quant mode: {}".format(self.quant_mode)
 
         if self.dim_sqrt is None:
             n = torch.tensor(x.shape[2], dtype=torch.float) # feature dim(768)
@@ -515,7 +515,7 @@ class IntGELU(Module):
         super(IntGELU, self).__init__()
         self.register_buffer('input_scaling_factor', torch.ones(1))
         self.quant_mode = quant_mode
-        if force_dequant in ['nonlinear', 'gelu']:
+        if force_dequant in ['nonlinear', 'gelu', 'gelu+layernorm']:
             logger.info("Force dequantize gelu")
             self.quant_mode = 'none'
 
@@ -562,7 +562,7 @@ class IntGELU(Module):
             return self.activation_fn(x), None
 
         assert self.quant_mode == 'symmetric', \
-                "unsupported quant mode: {}".format(quant_mode)
+                "unsupported quant mode: {}".format(self.quant_mode)
 
         x_int = x / scaling_factor
         sigmoid_int, sigmoid_scaling_factor = self.int_erf(x_int, scaling_factor / self.k)
@@ -640,7 +640,7 @@ class IntSoftmax(Module):
             return utils.softmax(x, dim=-1, onnx_trace=False), None
 
         assert self.quant_mode == 'symmetric', \
-                "unsupported quant mode: {}".format(quant_mode)
+                "unsupported quant mode: {}".format(self.quant_mode)
 
         x_int = x / scaling_factor
 

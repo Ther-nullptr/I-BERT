@@ -57,7 +57,7 @@ def arg_parse():
                         choices=['none', 'symmetric',],
                         help='quantization mode')
     parser.add_argument('--force-dequant', type=str, default='none', 
-                        choices=['none', 'gelu', 'layernorm', 'softmax', 'nonlinear'],
+                        choices=['none', 'gelu', 'layernorm', 'softmax', 'nonlinear', 'gelu+layernorm'],
                         help='force dequantize the specific layers')
 
     parser.add_argument('--model-dir', type=str, default='models',

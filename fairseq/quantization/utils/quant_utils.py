@@ -162,6 +162,19 @@ class round_ste(Function):
     @staticmethod
     def backward(ctx, grad_output):
         return grad_output.clone()
+    
+    
+class clamp_ste(Function):
+    """
+    Straight-through Estimator(STE) for torch.clamp()
+    """
+    @staticmethod
+    def forward(ctx, x):
+        return torch.clamp(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.clone()
 
 
 def batch_frexp(inputs, max_bit=31):

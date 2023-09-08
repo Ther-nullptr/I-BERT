@@ -372,6 +372,7 @@ def _upgrade_state_dict(state):
         }
     # default to translation task
     if not hasattr(state["args"], "task"):
+        print(state.keys())
         state["args"].task = "translation"
     # --raw-text and --lazy-load are deprecated
     if getattr(state["args"], "raw_text", False):

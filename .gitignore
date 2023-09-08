@@ -136,3 +136,12 @@ experimental/*
 checkpoints*
 **/tags
 dumps
+
+dict.txt
+encoder.json
+glue_data/
+models/roberta.base/
+models/roberta.large/
+outputs/
+outputs-quant-baseline/
+*.bpe

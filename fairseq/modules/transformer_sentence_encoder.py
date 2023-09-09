@@ -102,7 +102,9 @@ class TransformerSentenceEncoder(nn.Module):
         q_noise: float = 0.0,
         qn_block_size: int = 8,
         quant_mode: str = 'none',
-        force_dequant: str = 'none'
+        force_dequant: str = 'none',
+        use_fp8_operator: bool = False,
+        threshold_ratio: float = 0.05,
     ) -> None:
 
         super().__init__()
@@ -180,8 +182,10 @@ class TransformerSentenceEncoder(nn.Module):
                 export=export,
                 q_noise=q_noise,
                 qn_block_size=qn_block_size,
-                quant_mode = self.quant_mode,
+                quant_mode=self.quant_mode,
                 force_dequant=self.force_dequant,
+                use_fp8_operator=use_fp8_operator,
+                threshold_ratio=threshold_ratio
             )
             for _ in range(num_encoder_layers)
         ])
@@ -228,6 +232,8 @@ class TransformerSentenceEncoder(nn.Module):
         qn_block_size,
         quant_mode,
         force_dequant,
+        use_fp8_operator,
+        threshold_ratio
     ):
         return TransformerSentenceEncoderLayer(
             embedding_dim=embedding_dim,
@@ -241,7 +247,9 @@ class TransformerSentenceEncoder(nn.Module):
             q_noise=q_noise,
             qn_block_size=qn_block_size,
             quant_mode=quant_mode,
-            force_dequant=force_dequant
+            force_dequant=force_dequant,
+            use_fp8_operator=use_fp8_operator,
+            threshold_ratio=threshold_ratio
         )
 
     def prepare_for_tpu_(self, **kwargs):

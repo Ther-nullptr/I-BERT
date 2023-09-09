@@ -67,6 +67,7 @@ class MultiheadAttention(nn.Module):
         self.dropout_module = FairseqDropout(
             dropout, module_name=self.__class__.__name__
         )
+        self.use_fp8_operator = use_fp8_operator
 
         self.head_dim = embed_dim // num_heads
         assert (
@@ -105,15 +106,15 @@ class MultiheadAttention(nn.Module):
 
         if (use_fp8_operator):
             self.softmax_operator = FP8LinearSoftmax(self.softmax_output_bit,
-                                            quant_mode=self.quant_mode,
-                                            force_dequant=self.force_dequant,
-                                            x_th_ratio=threshold_ratio,
-                                            head_dim=self.head_dim,
-                                            num_heads=self.num_heads)
+                                                    quant_mode=self.quant_mode,
+                                                    force_dequant=self.force_dequant,
+                                                    x_th_ratio=threshold_ratio,
+                                                    head_dim=self.head_dim,
+                                                    num_heads=self.num_heads)
         else:
             self.softmax_operator = IntSoftmax(self.softmax_output_bit, 
-                                    quant_mode=self.quant_mode,
-                                    force_dequant=self.force_dequant)
+                                               quant_mode=self.quant_mode,
+                                               force_dequant=self.force_dequant)
 
         self.attn_probs_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
         self.attn_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
@@ -424,17 +425,20 @@ class MultiheadAttention(nn.Module):
         
 ##########################################################################################
 
-        attn_weights_float, attn_probs_scaling_factor = \
-                self.softmax_operator(attn_weights, attn_weights_scaling_factor)
-        attn_weights = attn_weights_float.type_as(attn_weights)
-        attn_probs = self.dropout_module(attn_weights)
-
-        assert v is not None
-        attn = torch.bmm(attn_probs, v) 
+        if self.use_fp8_operator:
+            with torch.no_grad():
+                attn = self.softmax_operator(attn_weights, v)
         
 ##########################################################################################
 
-        # attn = self.softmax_operator(attn_weights, v)
+        else:
+            attn_weights_float, attn_probs_scaling_factor = \
+                    self.softmax_operator(attn_weights, attn_weights_scaling_factor)
+            attn_weights = attn_weights_float.type_as(attn_weights)
+            attn_probs = self.dropout_module(attn_weights)
+
+            assert v is not None
+            attn = torch.bmm(attn_probs, v) 
 
 ##########################################################################################
         

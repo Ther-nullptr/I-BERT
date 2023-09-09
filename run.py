@@ -59,6 +59,11 @@ def arg_parse():
     parser.add_argument('--force-dequant', type=str, default='none', 
                         choices=['none', 'gelu', 'layernorm', 'softmax', 'nonlinear', 'gelu+layernorm'],
                         help='force dequantize the specific layers')
+    parser.add_argument('--use-fp8-operator', type=bool,
+                        default=False,
+                        help='whether to use fp8 operator')
+    parser.add_argument('--threshold-ratio', type=float, default=0.05, 
+                        help='operator divide ratio')
 
     parser.add_argument('--model-dir', type=str, default='models',
                         help='model directory')
@@ -212,6 +217,8 @@ subprocess_args = [
     '--dropout', str(args.dropout), '--attention-dropout', str(args.attn_dropout),
     '--quant-mode', args.quant_mode,
     '--force-dequant', args.force_dequant,
+    '--use-fp8-operator', str(args.use_fp8_operator),
+    '--threshold-ratio', str(args.threshold_ratio),
 ]
 
 if valid_interval_updates is not None:
@@ -227,5 +234,7 @@ else:
     subprocess_args.append('--maximize-best-checkpoint-metric')
 
 subprocess_args = subprocess_args + finetuning_args
+
+print('subprocess_args:', subprocess_args)
 
 subprocess.call(subprocess_args)

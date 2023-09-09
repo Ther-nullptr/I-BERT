@@ -688,8 +688,6 @@ class FP8LinearSoftmax(Module):
         self.num_heads = num_heads
         self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(448, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
         self.x_th_ratio = x_th_ratio
-        # self.k = 1.
-        # self.b = 1.
         self.alpha = 1.
         self.beta = 0.99 # EMA
         self.quantizer = FPQuantizer(n_bits=8, mantissa_bits=3, use_ieee_standard=False)

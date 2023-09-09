@@ -39,6 +39,8 @@ class TransformerSentenceEncoderLayer(nn.Module):
         init_fn: Callable = None,
         quant_mode: str = 'none',
         force_dequant: str = 'none',
+        use_fp8_operator: bool = False,
+        threshold_ratio: float = 0.05,
     ) -> None:
         super().__init__()
 
@@ -73,6 +75,8 @@ class TransformerSentenceEncoderLayer(nn.Module):
             qn_block_size=qn_block_size,
             quant_mode=quant_mode,
             force_dequant=force_dequant,
+            use_fp8_operator=use_fp8_operator,
+            threshold_ratio=threshold_ratio,
         )
 
         # 32bit quantization with the maximum absolute value of 2**21
@@ -131,6 +135,8 @@ class TransformerSentenceEncoderLayer(nn.Module):
         qn_block_size,
         quant_mode,
         force_dequant,
+        use_fp8_operator,
+        threshold_ratio
     ):
         return MultiheadAttention(
             embed_dim,
@@ -142,6 +148,8 @@ class TransformerSentenceEncoderLayer(nn.Module):
             quant_mode=quant_mode,
             force_dequant=force_dequant,
             return_output_scale=True,
+            use_fp8_operator=use_fp8_operator,
+            threshold_ratio=threshold_ratio,
         )
         
     def forward(

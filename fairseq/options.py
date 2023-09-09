@@ -273,10 +273,15 @@ def get_parser(desc, default_task="translation"):
     parser.add_argument('--quant-mode', type=str, default='none', choices=['none', 'symmetric', 'asymmetric'],
                         help='quantization mode')
     parser.add_argument('--force-dequant', type=str, default='none', 
-                        choices=['none', 'gelu', 'layernorm', 'softmax', 'nonlinear'],
+                        choices=['none', 'gelu', 'layernorm', 'softmax', 'nonlinear', 'gelu+layernorm'],
                         help='force dequantize the specific layers')
     parser.add_argument('--log-file', type=str, default='none',
                         help='logging file')
+    parser.add_argument('--use-fp8-operator', type=bool,
+                        default=False,
+                        help='whether to use fp8 operator')
+    parser.add_argument('--threshold-ratio', type=float, default=0.05, 
+                        help='operator divide ratio')
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():

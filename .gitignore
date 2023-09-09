@@ -144,4 +144,5 @@ models/roberta.base/
 models/roberta.large/
 outputs/
 outputs-quant-baseline/
+outputs-quant-fp8/
 *.bpe

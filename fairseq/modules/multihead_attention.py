@@ -43,6 +43,8 @@ class MultiheadAttention(nn.Module):
         quant_mode='none',
         force_dequant='none',
         return_output_scale=False,
+        use_fp8_operator=False,
+        threshold_ratio=0.05,
     ):
         super().__init__()
         self.quant_mode = quant_mode
@@ -101,9 +103,17 @@ class MultiheadAttention(nn.Module):
         self.v_proj_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
         self.q_proj_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
 
-        self.softmax = IntSoftmax(self.softmax_output_bit, 
-                                  quant_mode=self.quant_mode,
-                                  force_dequant=self.force_dequant)
+        if (use_fp8_operator):
+            self.softmax_operator = FP8LinearSoftmax(self.softmax_output_bit,
+                                            quant_mode=self.quant_mode,
+                                            force_dequant=self.force_dequant,
+                                            x_th_ratio=threshold_ratio,
+                                            head_dim=self.head_dim,
+                                            num_heads=self.num_heads)
+        else:
+            self.softmax_operator = IntSoftmax(self.softmax_output_bit, 
+                                    quant_mode=self.quant_mode,
+                                    force_dequant=self.force_dequant)
 
         self.attn_probs_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
         self.attn_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
@@ -412,17 +422,21 @@ class MultiheadAttention(nn.Module):
         if before_softmax:
             return attn_weights, v
         
-        # print('attn_weights:', attn_weights.shape)
+##########################################################################################
 
         attn_weights_float, attn_probs_scaling_factor = \
-                self.softmax(attn_weights, attn_weights_scaling_factor)
+                self.softmax_operator(attn_weights, attn_weights_scaling_factor)
         attn_weights = attn_weights_float.type_as(attn_weights)
         attn_probs = self.dropout_module(attn_weights)
-        
-        # print('v:', v.shape)
 
         assert v is not None
         attn = torch.bmm(attn_probs, v) 
+        
+##########################################################################################
+
+        # attn = self.softmax_operator(attn_weights, v)
+
+##########################################################################################
         
         if q_scaling_factor is not None:
             # attn / attn_scaling_factor is integer

@@ -102,7 +102,7 @@ def quantize_to_fp8_ste_MM(
         bias = 2**E - torch.log2(maxval) + torch.log2(2 - 2 * 2 ** (-M)) - 1
 
     minval = -maxval if sign_bits == 1 else torch.zeros_like(maxval)
-    xc = torch.min(torch.max(x_float, minval), maxval)
+    xc = torch.clamp(x_float, minval, maxval)
 
     """
     2 notes here:
@@ -116,7 +116,7 @@ def quantize_to_fp8_ste_MM(
 
     """
 
-    log_scales = torch.clamp((torch.floor(torch.log2(torch.abs(xc)) + bias)).detach(), 1.0)
+    log_scales = torch.clamp((floor_ste.apply(torch.log2(torch.abs(xc)) + bias)), 1.0)
 
     scales = 2.0 ** (log_scales - M - bias)
 
@@ -131,7 +131,7 @@ class FP8QuantizerFunc(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        return grad_output.clone()
+        return grad_output.clone(), None, None, None, None, None
 
 
 class QuantizerBase(nn.Module):
@@ -141,39 +141,6 @@ class QuantizerBase(nn.Module):
         self.per_channel = per_channel
         self.state = None
         self.x_min_fp32 = self.x_max_fp32 = None
-
-    @property
-    def is_initialized(self):
-        raise NotImplementedError()
-
-    @property
-    def x_max(self):
-        raise NotImplementedError()
-
-    @property
-    def symmetric(self):
-        raise NotImplementedError()
-
-    @property
-    def x_min(self):
-        raise NotImplementedError()
-
-    def forward(self, x_float):
-        raise NotImplementedError()
-
-    def _adjust_params_per_channel(self, x):
-        raise NotImplementedError()
-
-    def set_quant_range(self, x_min, x_max):
-        raise NotImplementedError()
-
-    def extra_repr(self):
-        return "n_bits={}, per_channel={}, is_initalized={}".format(
-            self.n_bits, self.per_channel, self.is_initialized
-        )
-
-    def reset(self):
-        self._delta = None
 
 
 class FPQuantizer(QuantizerBase):

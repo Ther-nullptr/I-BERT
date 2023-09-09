@@ -169,12 +169,38 @@ class clamp_ste(Function):
     Straight-through Estimator(STE) for torch.clamp()
     """
     @staticmethod
-    def forward(ctx, x):
-        return torch.clamp(x)
+    def forward(ctx, x, min, max):
+        return torch.clamp(x, min=min, max=max)
 
     @staticmethod
     def backward(ctx, grad_output):
-        return grad_output.clone()
+        return grad_output.clone(), None, None
+    
+
+class clamp_min_ste(Function):
+    """
+    Straight-through Estimator(STE) for torch.clamp()
+    """
+    @staticmethod
+    def forward(ctx, x, min):
+        return torch.clamp(x, min=min)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.clone(), None
+    
+
+class clamp_max_ste(Function):
+    """
+    Straight-through Estimator(STE) for torch.clamp()
+    """
+    @staticmethod
+    def forward(ctx, x, max):
+        return torch.clamp(x, max=max)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.clone(), None
 
 
 def batch_frexp(inputs, max_bit=31):
@@ -248,7 +274,6 @@ class fixedpoint_mul(Function):
             _B = (z_scaling_factor.type(torch.float)).type(torch.double)
             new_scale = _A / _B
             new_scale = reshape(new_scale)
-
             m, e = batch_frexp(new_scale)
 
             output = z_int.type(torch.double) * m.type(torch.double)

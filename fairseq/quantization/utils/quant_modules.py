@@ -683,10 +683,10 @@ class FP8LinearSoftmax(Module):
         super(FP8LinearSoftmax, self).__init__()
         self.output_bit = output_bit
         self.quant_mode = quant_mode
-        self.base = 2 # torch.e
+        self.base = 2
         self.head_dim = head_dim
         self.num_heads = num_heads
-        self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(240.0, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
+        self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(57344, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
         self.x_th_ratio = x_th_ratio
         self.alpha = 1.
         self.beta = 0.99 # EMA
@@ -719,66 +719,33 @@ class FP8LinearSoftmax(Module):
 
         assert self.quant_mode == 'symmetric', \
                 "unsupported quant mode: {}".format(self.quant_mode)
-                
-        max_fp16_val = torch.finfo(torch.float16).max
-        max_bf16_val = torch.finfo(torch.bfloat16).max
         
         _, src_len, tgt_len = attn_weights.shape[0], attn_weights.shape[1], attn_weights.shape[2]
         attn_weights = attn_weights.view(-1, self.num_heads, src_len, tgt_len) # (b, h_num, s, s)
         v = v.view(-1, self.num_heads, tgt_len, self.head_dim) # (b, h_num, s, d)
           
         # quantize attn_weights & v to FP8
-        attn_weights = self.quantizer_S1E4M3(attn_weights)
-        v = self.quantizer_S1E4M3(v)
-        
-        if True: # just use the saved data
-            mask = attn_weights > self.x_th.view(-1, self.num_heads, 1, 1) # mask: (b, h_num, s, s)
-            k = torch.pow(self.base, self.x_th) * torch.log(torch.tensor(self.base))
-            b = (1 - self.x_th * torch.log(torch.tensor(self.base))) * torch.pow(self.base, self.x_th)
-            
-        else: # get the x_th_ratio of data
-            # attn_weights: (b, h_num, s, s) x_top: (b, h_num, s, x_th_ratio * s)
-            x_top, indices = attn_weights.topk(int(attn_weights.shape[-1] * self.x_th_ratio), dim=-1)
-            # reproduce the mask by indices, which has the save shape as attn_weights
-            mask = torch.zeros_like(attn_weights, dtype=torch.bool).scatter_(-1, indices, 1)
-            # x_th: (b, h_num, s)
-            x_th = x_top[:, :, :, -1]
-            x_th_to_save = x_th.transpose(0, 1) # (h_num, b, s)
-            x_th_to_save = x_th_to_save.mean(dim=[-1, -2]).flatten() # shape: (h_num, )
-            # EMA
-            # self.x_th = self.beta * self.x_th + (1 - self.beta) * x_th_to_save
-            self.x_th = x_th_to_save
-            print(self.x_th)
-            k = torch.exp(x_th_to_save) # (h_num,)
-            b = (1 - x_th_to_save) * k # (h_num,)
+        attn_weights = self.quantizer_S1E5M2(attn_weights)
+        v = self.quantizer_S1E5M2(v)
+
+        mask = attn_weights > self.x_th.view(-1, self.num_heads, 1, 1) # mask: (b, h_num, s, s)
+        k = torch.pow(self.base, self.x_th) * torch.log(torch.tensor(self.base))
+        b = (1 - self.x_th * torch.log(torch.tensor(self.base))) * torch.pow(self.base, self.x_th)
 
         sparse_attn_weights = mask * attn_weights
         dense_attn_weights = torch.masked_fill(attn_weights, mask, float('-inf'))
-        '''
-        x = tensor([[-1.1820, -0.0202,  0.1284,  0.1610, -0.0022],
-                    [-0.0207, -0.9504, -1.0573,  0.0332,  0.3578],
-                    [ 0.3821,  1.8709,  0.7874, -0.0684,  0.7043]])
-                    
-        dense = tensor([[-1.1820, -0.0202,    -inf,    -inf, -0.0022],
-                        [-0.0207, -0.9504, -1.0573,    -inf,    -inf],
-                        [ 0.3821,    -inf,    -inf, -0.0684,  0.7043]])
-                        
-        sparse = tensor([[-0.0000, -0.0000, 0.1284, 0.1610, -0.0000],
-                         [-0.0000, -0.0000, -0.0000, 0.0332, 0.3578],
-                         [0.0000, 1.8709, 0.7874, -0.0000, 0.0000]])
-        '''
 
         # (h) -> (1, h, 1, 1)
         k = k.view(-1, self.num_heads, 1, 1)
         b = b.view(-1, self.num_heads, 1, 1)
         
         dense_attn_weights_exp = torch.pow(self.base, dense_attn_weights) # (b, h_num, s, s)
-        dense_attn_weights_exp = self.quantizer_S1E4M3(dense_attn_weights_exp)
+        dense_attn_weights_exp = self.quantizer_S1E5M2(dense_attn_weights_exp)
         dense_attn = dense_attn_weights_exp @ v
         dense_attn = self.convert_to_16_bit(dense_attn)
         
         sparse_attn_weights_operated_1 = (sparse_attn_weights @ v) # (b, h_num, s, s) x (b, h_num, s, dim) -> (b, h_num, s, dim)
-        sparse_attn_weights_operated_1 = self.quantizer_S1E4M3(sparse_attn_weights_operated_1)
+        sparse_attn_weights_operated_1 = self.quantizer_S1E5M2(sparse_attn_weights_operated_1)
         sparse_attn_weights_operated_1 = k * sparse_attn_weights_operated_1 # mult along the head dim
         sparse_attn_weights_operated_1 = self.convert_to_16_bit(sparse_attn_weights_operated_1)
         
@@ -798,7 +765,7 @@ class FP8LinearSoftmax(Module):
         denominator = self.convert_to_16_bit(denominator)
         
         output = total_attn / (denominator + 1e-20)
-        output = self.quantizer_S1E4M3(output)
+        output = self.quantizer_S1E5M2(output)
         output = output.view(-1, tgt_len, self.head_dim).to(torch.float32)
         
         return output

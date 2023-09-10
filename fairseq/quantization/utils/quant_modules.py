@@ -683,14 +683,18 @@ class FP8LinearSoftmax(Module):
         super(FP8LinearSoftmax, self).__init__()
         self.output_bit = output_bit
         self.quant_mode = quant_mode
-        self.base = 2
+        self.base = torch.e
         self.head_dim = head_dim
         self.num_heads = num_heads
-        self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(448, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
+        self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(57344, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
         self.x_th_ratio = x_th_ratio
         self.alpha = 1.
         self.beta = 0.99 # EMA
-        self.quantizer = FPQuantizer(n_bits=8, mantissa_bits=3, use_ieee_standard=False)
+        self.precision = 'fp8'
+        if self.precision == 'fp8':
+            self.quantizer = FPQuantizer(n_bits=8, mantissa_bits=2, use_ieee_standard=True)
+        else:
+            self.quantizer = FPQuantizer(n_bits=16, mantissa_bits=7, use_ieee_standard=True)
         if force_dequant in ['nonlinear', 'softmax']:
             logger.info("Force dequantize softmax")
             self.quant_mode = 'none'
@@ -714,12 +718,12 @@ class FP8LinearSoftmax(Module):
         _, src_len, tgt_len = attn_weights.shape[0], attn_weights.shape[1], attn_weights.shape[2]
         attn_weights = attn_weights.view(-1, self.num_heads, src_len, tgt_len) # (b, h_num, s, s)
         v = v.view(-1, self.num_heads, tgt_len, self.head_dim) # (b, h_num, s, d)
-        
+          
         # quantize attn_weights & v to FP8
         attn_weights = self.quantizer(attn_weights)
         v = self.quantizer(v)
         
-        if self.training == False: # just use the saved data
+        if True: # just use the saved data
             mask = attn_weights > self.x_th.view(-1, self.num_heads, 1, 1) # mask: (b, h_num, s, s)
             k = torch.exp(self.x_th)
             b = (1 - self.x_th) * k
@@ -734,7 +738,9 @@ class FP8LinearSoftmax(Module):
             x_th_to_save = x_th.transpose(0, 1) # (h_num, b, s)
             x_th_to_save = x_th_to_save.mean(dim=[-1, -2]).flatten() # shape: (h_num, )
             # EMA
-            self.x_th = self.beta * self.x_th + (1 - self.beta) * x_th_to_save
+            # self.x_th = self.beta * self.x_th + (1 - self.beta) * x_th_to_save
+            self.x_th = x_th_to_save
+            print(self.x_th)
             k = torch.exp(x_th_to_save) # (h_num,)
             b = (1 - x_th_to_save) * k # (h_num,)
 
@@ -760,25 +766,30 @@ class FP8LinearSoftmax(Module):
         
         dense_attn_weights_exp = torch.exp(dense_attn_weights) # (b, h_num, s, s)
         dense_attn_weights_exp = self.quantizer(dense_attn_weights_exp)
-        dense_attn = torch.clamp((dense_attn_weights_exp @ v), min=-max_fp16_val, max=max_fp16_val).to(torch.float16)
+        dense_attn = dense_attn_weights_exp @ v
+        dense_attn = torch.clamp(dense_attn, min=-max_fp16_val, max=max_fp16_val).to(torch.float16).to(torch.float32)
         
         sparse_attn_weights_operated_1 = (sparse_attn_weights @ v) # (b, h_num, s, s) x (b, h_num, s, dim) -> (b, h_num, s, dim)
         sparse_attn_weights_operated_1 = self.quantizer(sparse_attn_weights_operated_1)
         sparse_attn_weights_operated_1 = k * sparse_attn_weights_operated_1 # mult along the head dim
-        sparse_attn_weights_operated_1 = torch.clamp(sparse_attn_weights_operated_1, min=-max_fp16_val, max=max_fp16_val).to(torch.float16)
+        sparse_attn_weights_operated_1 = torch.clamp(sparse_attn_weights_operated_1, min=-max_fp16_val, max=max_fp16_val).to(torch.float16).to(torch.float32)
         
-        sparse_attn_weights_operated_2 = torch.clamp((mask.float() * b) @ v, min=-max_fp16_val, max=max_fp16_val).to(torch.float16)
-        sparse_attn = sparse_attn_weights_operated_1 + sparse_attn_weights_operated_2
-        sparse_attn = torch.clamp(sparse_attn, min=-max_fp16_val, max=max_fp16_val).to(torch.float16)
+        sparse_attn_weights_operated_2 = (mask * b) @ v 
+        sparse_attn_weights_operated_2 = torch.clamp(sparse_attn_weights_operated_2, min=-max_fp16_val, max=max_fp16_val).to(torch.float16).to(torch.float32)
+        sparse_attn = (sparse_attn_weights_operated_1 + sparse_attn_weights_operated_2)
+        sparse_attn = torch.clamp(sparse_attn, min=-max_fp16_val, max=max_fp16_val).to(torch.float16).to(torch.float32)
         
         total_attn = dense_attn + sparse_attn
-        total_attn = torch.clamp(total_attn, min=-max_fp16_val, max=max_fp16_val).to(torch.float16)
+        total_attn = torch.clamp(total_attn, min=-max_fp16_val, max=max_fp16_val).to(torch.float16).to(torch.float32)
         
         # get the ratio
-        denominator = torch.sum(dense_attn_weights_exp, dim=-1, keepdim=True) + torch.sum((sparse_attn_weights * k + b) * mask, dim=-1, keepdim=True)
-        denominator = torch.clamp(denominator, min=-max_fp16_val, max=max_fp16_val).to(torch.float16)
+        denominator = torch.sum(dense_attn_weights_exp, dim=-1, keepdim=True) \
+                    + torch.sum(sparse_attn_weights * k, dim=-1, keepdim=True) \
+                    + torch.sum(b * mask, dim=-1, keepdim=True)
+        denominator = torch.clamp(denominator, min=-max_fp16_val, max=max_fp16_val).to(torch.float16).to(torch.float32)
         
-        output = total_attn / denominator
-        output = self.quantizer(output).view(-1, tgt_len, self.head_dim).to(torch.float32)
+        output = total_attn / (denominator + 1e-20)
+        output = self.quantizer(output)
+        output = output.view(-1, tgt_len, self.head_dim).to(torch.float32)
         
         return output

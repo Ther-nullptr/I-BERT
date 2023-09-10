@@ -45,6 +45,7 @@ class MultiheadAttention(nn.Module):
         return_output_scale=False,
         use_fp8_operator=False,
         threshold_ratio=0.05,
+        layer_id=0,
     ):
         super().__init__()
         self.quant_mode = quant_mode
@@ -103,8 +104,10 @@ class MultiheadAttention(nn.Module):
         self.k_proj_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
         self.v_proj_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
         self.q_proj_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
+        
+        self.layer_id = layer_id
 
-        if (use_fp8_operator):
+        if (self.use_fp8_operator):
             self.softmax_operator = FP8LinearSoftmax(self.softmax_output_bit,
                                                     quant_mode=self.quant_mode,
                                                     force_dequant=self.force_dequant,
@@ -409,25 +412,25 @@ class MultiheadAttention(nn.Module):
         if key_padding_mask is not None:
             # don't attend to padding symbols
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            if not self.tpu:
-                attn_weights = attn_weights.masked_fill(
-                    key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
-                    float("-inf")
-                )
-            else:
-                attn_weights = attn_weights.transpose(0, 2)
-                attn_weights = attn_weights.masked_fill(key_padding_mask, float('-inf'))
-                attn_weights = attn_weights.transpose(0, 2)
+            attn_weights = attn_weights.masked_fill(
+                key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
+                float("-inf")
+            )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+            
+        # # for debug
+        # print('layer_id: ', self.layer_id)
+        # torch.save(attn_weights, 'attn_weights_{}.pt'.format(self.layer_id))
+        # torch.save(v, 'v_{}.pt'.format(self.layer_id))
+        # # debug end 
 
-        if before_softmax:
-            return attn_weights, v
+        # if before_softmax:
+        #     return attn_weights, v
         
 ##########################################################################################
 
         if self.use_fp8_operator:
-            with torch.no_grad():
-                attn = self.softmax_operator(attn_weights, v)
+            attn = self.softmax_operator(attn_weights, v)
         
 ##########################################################################################
 

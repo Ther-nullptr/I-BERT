@@ -207,7 +207,7 @@ subprocess_args = [
     '--weight-decay', str(args.weight_decay), 
     '--optimizer', 'adam', '--adam-betas', '(0.9, 0.98)', '--adam-eps', '1e-06',
     '--clip-norm',  '0.0',
-    '--lr-scheduler',  'polynomial_decay', '--lr', lr,
+    '--lr-scheduler',  'polynomial_decay', '--lr', lr, '--log-interval', '10', 
     '--total-num-update', total_num_updates, '--warmup-updates', warm_updates,
     '--max-epoch',  max_epochs,
     '--find-unused-parameters',  

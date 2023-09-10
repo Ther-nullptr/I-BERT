@@ -146,3 +146,4 @@ outputs/
 outputs-quant-baseline/
 outputs-quant-fp8/
 *.bpe
+*.pt

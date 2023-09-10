@@ -205,3 +205,12 @@ class FPQuantizer(QuantizerBase):
         )
 
         return res
+    
+    
+class FP16Quantizer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+    def forward(self, x):
+        return x.half()
+    

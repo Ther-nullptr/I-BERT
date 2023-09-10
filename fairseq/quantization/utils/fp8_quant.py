@@ -13,13 +13,16 @@ def decode_binary_str(F_str):
     return F
 
 def generate_all_values_fp(
-    num_total_bits: int = 8, num_exponent_bits: int = 4, bias: int = 8, use_ieee_standard: bool = True
+    num_total_bits: int = 8, num_exponent_bits: int = 4, bias: int = 7, sign_bits: int = 1, use_ieee_standard: bool = True
 ) -> list:
-    num_fraction_bits = num_total_bits - 1 - num_exponent_bits
+    
+    num_fraction_bits = num_total_bits - sign_bits - num_exponent_bits
 
     all_values = []
     exp_lower = -bias
-    for S in [-1.0, 1.0]:
+    S_list = [1.0] if sign_bits == 0 else [-1.0, 1.0]
+    
+    for S in S_list:
         for E_str_iter in product(*[[0, 1]] * num_exponent_bits): # from (0, ..., 0) to (1, ..., 0) if ieee_standard else (1, ..., 1) 
             if use_ieee_standard:
                 if E_str_iter == (1,) * num_exponent_bits:
@@ -61,8 +64,8 @@ def decode_float8(S, E, F, bias=16):
     return sign * fraction * 2.0 ** (exponent - bias)
 
 
-def get_max_value(num_total_bits: int = 8, num_exponent_bits: int = 4, bias: int = 8, use_ieee_standard: bool = True):
-    num_fraction_bits = num_total_bits - 1 - num_exponent_bits
+def get_max_value(num_total_bits: int = 8, num_exponent_bits: int = 4, bias: int = 7, sign_bits: int = 1, use_ieee_standard: bool = True):
+    num_fraction_bits = num_total_bits - sign_bits - num_exponent_bits
     if use_ieee_standard:
         scale = 2 ** (-num_fraction_bits)
         max_frac = 1 - scale
@@ -90,16 +93,16 @@ def quantize_to_fp8_ste_MM(
     This allows to define FP8 quantization using STE rounding functions and thus learn the bias
 
     """
+    if not use_ieee_standard: # only support when m = 3
+        assert n_bits == 8 and num_mantissa_bits == 3
+        
     M = torch.clamp(round_ste.apply(num_mantissa_bits), 1, n_bits - sign_bits)
     E = n_bits - sign_bits - M
 
     if maxval.shape[0] != 1 and len(maxval.shape) != len(x_float.shape):
         maxval = maxval.view([-1] + [1] * (len(x_float.shape) - 1))
     
-    if use_ieee_standard: 
-        bias = 2**E - torch.log2(maxval) + torch.log2(2 - 2 ** (-M)) - 2
-    else:
-        bias = 2**E - torch.log2(maxval) + torch.log2(2 - 2 * 2 ** (-M)) - 1
+    bias = 2**E - torch.log2(maxval) + torch.log2(2 - 2 ** (-M)) - 2
 
     minval = -maxval if sign_bits == 1 else torch.zeros_like(maxval)
     xc = torch.clamp(x_float, minval, maxval)
@@ -160,24 +163,22 @@ class FPQuantizer(QuantizerBase):
         mse_include_mantissa_bits=True,
         allow_unsigned=False,
         use_ieee_standard=True,
+        sign_bits=1,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
 
         self.mantissa_bits = mantissa_bits
-
-        self.ebits = self.n_bits - self.mantissa_bits - 1
-        self.default_bias = 2 ** (self.ebits - 1)
+        self.sign_bits = sign_bits
+        self.ebits = self.n_bits - self.mantissa_bits - self.sign_bits
+        self.default_bias = 2 ** (self.ebits - 1) - 1
 
         # assume signed, correct when range setting turns out to be unsigned
         if use_ieee_standard:
-            default_maxval = (2 - 2 ** (-self.mantissa_bits)) * 2 ** (
-                2**self.ebits - 2 - self.default_bias
-            )
+            default_maxval = get_max_value(self.n_bits, self.ebits, self.default_bias, self.sign_bits, True)
         else:
-            default_maxval = (2 - 2 ** (-self.mantissa_bits + 1)) * 2 ** (
-                2**self.ebits - 1 - self.default_bias
-            )
+            default_maxval = get_max_value(self.n_bits, self.ebits, self.default_bias, self.sign_bits, False)
+        print(f'default_maxval: {default_maxval}')
 
         self.maxval = maxval if maxval is not None else default_maxval
 
@@ -190,7 +191,6 @@ class FPQuantizer(QuantizerBase):
         self.mse_include_mantissa_bits = mse_include_mantissa_bits
 
         self.allow_unsigned = allow_unsigned
-        self.sign_bits = 1
         
         self.use_ieee_standard = use_ieee_standard
 

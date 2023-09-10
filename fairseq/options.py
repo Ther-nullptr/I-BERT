@@ -277,8 +277,8 @@ def get_parser(desc, default_task="translation"):
                         help='force dequantize the specific layers')
     parser.add_argument('--log-file', type=str, default='none',
                         help='logging file')
-    parser.add_argument('--use-fp8-operator', type=bool,
-                        default=False,
+    parser.add_argument('--use-fp8-operator', type=int,
+                        default=0,
                         help='whether to use fp8 operator')
     parser.add_argument('--threshold-ratio', type=float, default=0.05, 
                         help='operator divide ratio')

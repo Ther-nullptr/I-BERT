@@ -108,6 +108,7 @@ class MultiheadAttention(nn.Module):
         self.layer_id = layer_id
 
         if (self.use_fp8_operator):
+            print('use fp8 operator')
             self.softmax_operator = FP8LinearSoftmax(self.softmax_output_bit,
                                                     quant_mode=self.quant_mode,
                                                     force_dequant=self.force_dequant,
@@ -115,6 +116,7 @@ class MultiheadAttention(nn.Module):
                                                     head_dim=self.head_dim,
                                                     num_heads=self.num_heads)
         else:
+            print('use int8 operator')
             self.softmax_operator = IntSoftmax(self.softmax_output_bit, 
                                                quant_mode=self.quant_mode,
                                                force_dequant=self.force_dequant)

@@ -420,11 +420,10 @@ class MultiheadAttention(nn.Module):
             )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
             
-        # # for debug
-        # print('layer_id: ', self.layer_id)
-        # torch.save(attn_weights, 'attn_weights_{}.pt'.format(self.layer_id))
-        # torch.save(v, 'v_{}.pt'.format(self.layer_id))
-        # # debug end 
+        # for debug
+        print('layer_id: ', self.layer_id)
+        torch.save(attn_weights.view(bsz, self.num_heads, tgt_len, src_len), 'activations/attn_weights_{}.pt'.format(self.layer_id))
+        # debug end 
 
         # if before_softmax:
         #     return attn_weights, v

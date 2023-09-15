@@ -147,6 +147,54 @@ def log_derived(key: str, fn: Callable[[MetersDict], float], priority: int = 20)
             agg.add_meter(key, MetersDict._DerivedMeter(fn), priority)
 
 
+class ConcatTensorMeter(Meter):
+    """Concatenates tensors"""
+
+    def __init__(self, dim=0):
+        super().__init__()
+        self.reset()
+        self.dim = dim
+
+    def reset(self):
+        self.tensor = None
+
+    def update(self, val):
+        if self.tensor is None:
+            self.tensor = val
+        else:
+            self.tensor = torch.cat([self.tensor, val], dim=self.dim)
+
+    def state_dict(self):
+        return {
+            "tensor": self.tensor,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.tensor = state_dict["tensor"]
+
+    @property
+    def smoothed_value(self) -> float:
+        return []  # return a dummy value
+
+def log_concat_tensor(
+    key: str,
+    value: torch.Tensor,
+    priority: int = 10,
+    dim: int = 0,
+):
+    """Log a scalar value that is summed for reporting.
+
+    Args:
+        key (str): name of the field to log
+        value (float): value to log
+        priority (int): smaller values are logged earlier in the output
+        round (Optional[int]): number of digits to round to when displaying
+    """
+    for agg in get_active_aggregators():
+        if key not in agg:
+            agg.add_meter(key, ConcatTensorMeter(dim=dim), priority)
+        agg[key].update(value)
+
 def log_speed(
     key: str,
     value: float,

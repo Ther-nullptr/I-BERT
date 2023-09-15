@@ -8,8 +8,45 @@ import math
 import torch
 import torch.nn.functional as F
 
+import numpy as np
+from itertools import chain
+
+from sklearn.metrics import f1_score
+from sklearn.metrics import matthews_corrcoef as _matthews_corrcoef
+from scipy.stats import pearsonr, spearmanr
+
 from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
+from fairseq.logging.meters import safe_round
+
+def simple_accuracy(preds, labels):
+    return (preds == labels).mean()
+
+
+def acc_and_f1(preds, labels):
+    acc = simple_accuracy(preds, labels)
+    f1 = f1_score(y_true=labels, y_pred=preds)
+    return {
+        "acc": acc,
+        "f1": f1,
+        "acc_and_f1": (acc + f1) / 2,
+    }
+
+
+def pearson_and_spearman(preds, labels):
+    pearson_corr = pearsonr(preds, labels)[0]
+    spearman_corr = spearmanr(preds, labels)[0]
+    return {
+        "pearson": pearson_corr,
+        "spearmanr": spearman_corr,
+        "corr": (pearson_corr + spearman_corr) / 2,
+    }
+
+
+def matthews_corrcoef(preds, labels):
+    # make it consistent with other metrics taking (preds, labels) as input
+    mcc = _matthews_corrcoef(labels, preds)
+    return mcc
 
 
 @register_criterion('sentence_prediction')
@@ -71,7 +108,14 @@ class SentencePredictionCriterion(FairseqCriterion):
             logging_output['tn'] = ((preds == 0) & (targets == 0)).sum()
             logging_output['fp'] = ((preds == 1) & (targets == 0)).sum()
             logging_output['fn'] = ((preds == 0) & (targets == 1)).sum()
+        else:
+            logging_output["pred"] = logits.detach().cpu().tolist()
+            logging_output["targ"] = targets.detach().cpu().tolist()
 
+            logging_output["report_mcc"] = True
+            logging_output["report_acc_and_f1"] = True
+            logging_output["report_pearson_and_spearman"] = True
+        
         return loss, sample_size, logging_output
 
     @staticmethod
@@ -99,6 +143,52 @@ class SentencePredictionCriterion(FairseqCriterion):
             metrics.log_scalar('fp', 1. * fp, 1., round=1, sum_meter=True)
             metrics.log_scalar('fn', 1. * fn, 1., round=1, sum_meter=True)
             metrics.log_scalar('false', 1. * false, 1., round=1, sum_meter=True)
+        
+        # Metrics used by GLUE
+        pred = np.array(
+            list(chain.from_iterable(log.get("pred", []) for log in logging_outputs))
+        )
+        targ = np.array(
+            list(chain.from_iterable(log.get("targ", []) for log in logging_outputs))
+        )
+        
+        if len(pred):
+            metrics.log_concat_tensor("pred", torch.from_numpy(pred), dim=0)
+            metrics.log_concat_tensor("targ", torch.from_numpy(targ), dim=0)
+            if any("report_pearson_and_spearman" in log for log in logging_outputs):
+                metrics.log_derived(
+                    "pearson_and_spearman",
+                    lambda meters: safe_round(
+                        pearson_and_spearman(
+                            meters["pred"].tensor.numpy(),
+                            meters["targ"].tensor.numpy(),
+                        )["corr"]
+                        * 100,
+                        1,
+                    ),
+                )
+                metrics.log_derived(
+                    "pearson",
+                    lambda meters: safe_round(
+                        pearson_and_spearman(
+                            meters["pred"].tensor.numpy(),
+                            meters["targ"].tensor.numpy(),
+                        )["pearson"]
+                        * 100,
+                        1,
+                    ),
+                )
+                metrics.log_derived(
+                    "spearman",
+                    lambda meters: safe_round(
+                        pearson_and_spearman(
+                            meters["pred"].tensor.numpy(),
+                            meters["targ"].tensor.numpy(),
+                        )["spearmanr"]
+                        * 100,
+                        1,
+                    ),
+                )
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

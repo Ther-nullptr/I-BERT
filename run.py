@@ -228,9 +228,9 @@ if valid_interval_updates is not None:
 if args.no_save:
     subprocess_args += ['--no-save']
 
-if args.task == 'sts':
-    subprocess_args += ['--regression-target', '--best-checkpoint-metric', 'loss']
-else:
+if args.task == 'STS-B':
+    subprocess_args += ['--regression-target'] # , '--best-checkpoint-metric', 'loss']
+
     subprocess_args.append('--maximize-best-checkpoint-metric')
 
 subprocess_args = subprocess_args + finetuning_args

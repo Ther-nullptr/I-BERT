@@ -149,4 +149,4 @@ outputs-quant-fp8-base2/
 *.bpe
 *.pt
 
-activations/
+activation/

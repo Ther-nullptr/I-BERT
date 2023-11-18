@@ -658,7 +658,29 @@ class IntSoftmax(Module):
         exp_int = floor_ste.apply(exp_int * factor / 2 ** (32 - self.output_bit))
         scaling_factor = 1 / 2 ** self.output_bit
         return exp_int * scaling_factor, scaling_factor
+
+
+class AttnObserver(Module):
+    def __init__(self):
+        super(AttnObserver, self).__init__()
+        self.percentile_sigma = 0.01
+        self.percentile_alpha = 0.99999
+        self.certain_ratio_val = None
     
+    def update(self, v, percentage=0.99):
+        try:
+            cur_certain_ratio = torch.quantile(v.reshape(-1), percentage)
+        except:
+            cur_certain_ratio = torch.tensor(np.percentile(
+                v.reshape(-1).cpu(), percentage * 100),
+                                   device=v.device,
+                                   dtype=torch.float32)
+        if self.certain_ratio_val is None:
+            self.certain_ratio_val = cur_certain_ratio
+        else:
+            self.certain_ratio_val = self.certain_ratio_val + \
+                self.percentile_sigma * (cur_certain_ratio - self.certain_ratio_val)
+
     
 class FP8LinearSoftmax(Module):
     """
@@ -686,17 +708,41 @@ class FP8LinearSoftmax(Module):
         self.base = 2
         self.head_dim = head_dim
         self.num_heads = num_heads
-        self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(57344, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
+        self.threshold = 240.
+        self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(self.threshold, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
         self.x_th_ratio = x_th_ratio
         self.alpha = 1.
         self.beta = 0.99 # EMA
+        self.shifter = 4.
+        self.lambda_k = 5.
         self.quantizer_S1E4M3 = FPQuantizer(n_bits=8, mantissa_bits=3, sign_bits=1, use_ieee_standard=True)
         self.quantizer_S1E5M2 = FPQuantizer(n_bits=8, mantissa_bits=2, sign_bits=1, use_ieee_standard=True)
         self.quantizer_S0E5M3 = FPQuantizer(n_bits=8, mantissa_bits=3, sign_bits=0, use_ieee_standard=True)
         self.big_float_version = 'bf16'
+        self.observer = AttnObserver()
         if force_dequant in ['nonlinear', 'softmax']:
             logger.info("Force dequantize softmax")
             self.quant_mode = 'none'
+            
+    def convert_to_8_bit_int(self, x):
+        x = torch.clamp(x, min=torch.iinfo(torch.int8).min, max=torch.iinfo(torch.int8).max).to(torch.int8).to(torch.float32)
+        return x
+    
+    def convert_to_16_bit_int(self, x):
+        x = torch.clamp(x, min=torch.iinfo(torch.int16).min, max=torch.iinfo(torch.int16).max).to(torch.int16).to(torch.float32)
+        return x
+    
+    def convert_to_24_bit_int(self, x):
+        x = torch.clamp(x, min=torch.iinfo(torch.int32).min / (2**8), max=(torch.iinfo(torch.int32).max + 1) / (2**8) -1).to(torch.int32).to(torch.float32)
+        return x
+        
+    def convert_to_32_bit_int(self, x):
+        x = torch.clamp(x, min=torch.iinfo(torch.int32).min, max=torch.iinfo(torch.int32).max).to(torch.int32).to(torch.float32)
+        return x
+        
+    def convert_to_32_bit_pseudo_int(self, x, shift=10): # default as 1,21,10
+        x = (torch.clamp(x, min=(torch.iinfo(torch.int32).min) / (2**shift), max=(torch.iinfo(torch.int32).max) / (2**shift)) * (2 ** shift)).to(torch.int32).to(torch.float32) / (2 ** shift)
+        return x
             
     def convert_to_16_bit(self, x):
         if self.big_float_version == 'fp16':
@@ -707,10 +753,18 @@ class FP8LinearSoftmax(Module):
             raise ValueError("unknown big float version: {}".format(self.big_float_version))
         return x
             
-    def forward(self, attn_weights: torch.Tensor, v: torch.Tensor):
+    def forward(self, attn_weights: torch.Tensor, v: torch.Tensor, v_s, attn_s):
         # return a attn * v and attn * v scaling factor
         # attn_weights: [batch_size * num_heads, seq_len, seq_len]
         # v: [batch_size * num_heads, seq_len, head_dim]
+        
+        # update the threshold value when training
+        if self.training:
+            self.observer.update(attn_weights)
+            self.shifter = torch.max(torch.tensor(0.), self.observer.certain_ratio_val - torch.tensor(math.log(self.threshold, self.base)))
+        else:
+            print(f"observer certain ratio: {self.observer.certain_ratio_val}")
+            print(f"shift value: {self.shifter}")
         
         if self.quant_mode == 'none':
             attn_probs = utils.softmax(attn_weights, dim=-1, onnx_trace=False)
@@ -725,47 +779,48 @@ class FP8LinearSoftmax(Module):
         v = v.view(-1, self.num_heads, tgt_len, self.head_dim) # (b, h_num, s, d)
           
         # quantize attn_weights & v to FP8
-        attn_weights = self.quantizer_S1E5M2(attn_weights)
-        v = self.quantizer_S1E5M2(v)
+        attn_weights_int = self.convert_to_8_bit_int(attn_weights / attn_s)
+        attn_weights_int = (attn_weights_int - self.convert_to_8_bit_int(self.shifter / attn_s))
+        attn_weights = attn_s * attn_weights_int
+        
+        v_int = self.convert_to_8_bit_int(v / v_s)
+        x_th_int = self.convert_to_8_bit_int(self.x_th / attn_s)
+        
+        attn_weights = self.quantizer_S1E4M3(attn_weights)
 
         mask = attn_weights > self.x_th.view(-1, self.num_heads, 1, 1) # mask: (b, h_num, s, s)
-        k = torch.pow(self.base, self.x_th) * torch.log(torch.tensor(self.base))
-        b = (1 - self.x_th * torch.log(torch.tensor(self.base))) * torch.pow(self.base, self.x_th)
+        k = self.convert_to_16_bit_int(self.lambda_k * torch.exp(self.x_th))
+        b = self.convert_to_16_bit_int((1 - self.lambda_k * self.x_th) * torch.exp(self.x_th))
+        b_div_ks = self.convert_to_8_bit_int((1 / self.lambda_k - self.x_th) / attn_s)
 
-        sparse_attn_weights = mask * attn_weights
+        sparse_attn_weights = mask * attn_weights_int
         dense_attn_weights = torch.masked_fill(attn_weights, mask, float('-inf'))
 
         # (h) -> (1, h, 1, 1)
         k = k.view(-1, self.num_heads, 1, 1)
         b = b.view(-1, self.num_heads, 1, 1)
+        b_div_ks = b_div_ks.view(-1, self.num_heads, 1, 1)
         
         dense_attn_weights_exp = torch.pow(self.base, dense_attn_weights) # (b, h_num, s, s)
-        dense_attn_weights_exp = self.quantizer_S1E5M2(dense_attn_weights_exp)
-        dense_attn = dense_attn_weights_exp @ v
-        dense_attn = self.convert_to_16_bit(dense_attn)
+        dense_attn_weights_exp = self.quantizer_S1E4M3(dense_attn_weights_exp)
+        dense_attn = dense_attn_weights_exp @ v_int
+        dense_attn = self.convert_to_32_bit_pseudo_int(dense_attn)
         
-        sparse_attn_weights_operated_1 = (sparse_attn_weights @ v) # (b, h_num, s, s) x (b, h_num, s, dim) -> (b, h_num, s, dim)
-        sparse_attn_weights_operated_1 = self.quantizer_S1E5M2(sparse_attn_weights_operated_1)
-        sparse_attn_weights_operated_1 = k * sparse_attn_weights_operated_1 # mult along the head dim
-        sparse_attn_weights_operated_1 = self.convert_to_16_bit(sparse_attn_weights_operated_1)
-        
-        sparse_attn_weights_operated_2 = (mask * b) @ v 
-        sparse_attn_weights_operated_2 = self.convert_to_16_bit(sparse_attn_weights_operated_2)
-        
-        sparse_attn = (sparse_attn_weights_operated_1 + sparse_attn_weights_operated_2)
-        sparse_attn = self.convert_to_16_bit(sparse_attn)
+        sparse_attn = ((sparse_attn_weights + mask * (b_div_ks)) @ v_int) # (b, h_num, s, s) x (b, h_num, s, dim) -> (b, h_num, s, dim)
+        sparse_attn = self.convert_to_32_bit_pseudo_int(sparse_attn)
+        sparse_attn = k * attn_s * sparse_attn # mult along the head dim
+        sparse_attn = self.convert_to_32_bit_pseudo_int(sparse_attn)
         
         total_attn = dense_attn + sparse_attn
-        total_attn = self.convert_to_16_bit(total_attn)
+        total_attn = self.convert_to_32_bit_pseudo_int(total_attn)
 
-        # get the ratio
-        denominator = torch.sum(dense_attn_weights_exp, dim=-1, keepdim=True) \
-                    + torch.sum(sparse_attn_weights * k, dim=-1, keepdim=True) \
-                    + torch.sum(b * mask, dim=-1, keepdim=True)
-        denominator = self.convert_to_16_bit(denominator)
+        denominator = self.convert_to_32_bit_pseudo_int(torch.sum(dense_attn_weights_exp, dim=-1, keepdim=True)) \
+                        + self.convert_to_32_bit_pseudo_int(torch.sum((sparse_attn_weights) * k * attn_s, dim=-1, keepdim=True)) \
+                        + self.convert_to_32_bit_pseudo_int(torch.sum(b * mask, dim=-1, keepdim=True))
+        denominator = self.convert_to_32_bit_pseudo_int(denominator)
         
-        output = total_attn / (denominator + 1e-20)
-        output = self.quantizer_S1E5M2(output)
-        output = output.view(-1, tgt_len, self.head_dim).to(torch.float32)
+        output = total_attn / (denominator + 2**-10)
+        output = self.convert_to_8_bit_int(output)
+        output = output * v_s
         
         return output

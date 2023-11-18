@@ -431,7 +431,7 @@ class MultiheadAttention(nn.Module):
 ##########################################################################################
 
         if self.use_fp8_operator:
-            attn = self.softmax_operator(attn_weights, v)
+            attn = self.softmax_operator(attn_weights, v, v_scaling_factor, attn_weights_scaling_factor)
         
 ##########################################################################################
 

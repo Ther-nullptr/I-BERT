@@ -121,6 +121,7 @@ class MultiheadAttention(nn.Module):
                                                quant_mode=self.quant_mode,
                                                force_dequant=self.force_dequant)
 
+        self.attn_weight_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
         self.attn_probs_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
         self.attn_act = QuantAct(self.act_bit, quant_mode=self.quant_mode)
 
@@ -401,6 +402,8 @@ class MultiheadAttention(nn.Module):
             attn_weights_scaling_factor = q_scaling_factor * k_scaling_factor
         else:
             attn_weights_scaling_factor = None
+        _, attn_weights_scaling_factor = self.attn_weight_act(attn_weights, attn_weights_scaling_factor)
+            
         attn_weights = MultiheadAttention.apply_sparse_mask(attn_weights, tgt_len, src_len, bsz)
 
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
@@ -451,6 +454,7 @@ class MultiheadAttention(nn.Module):
             attn_scaling_factor = q_scaling_factor * k_scaling_factor
         else:
             attn_scaling_factor = None
+        attn = attn.view(bsz * self.num_heads, tgt_len, self.head_dim)
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)

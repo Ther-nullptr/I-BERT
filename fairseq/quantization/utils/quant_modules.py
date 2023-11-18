@@ -665,21 +665,31 @@ class AttnObserver(Module):
         super(AttnObserver, self).__init__()
         self.percentile_sigma = 0.01
         self.percentile_alpha = 0.99999
+        self.max_val = None
         self.certain_ratio_val = None
     
-    def update(self, v, percentage=0.99):
+    def update(self, v, percentage=0.95):
+        v = v.detach()
         try:
             cur_certain_ratio = torch.quantile(v.reshape(-1), percentage)
+            max_val = torch.quantile(v.reshape(-1), 1)
         except:
             cur_certain_ratio = torch.tensor(np.percentile(
                 v.reshape(-1).cpu(), percentage * 100),
                                    device=v.device,
                                    dtype=torch.float32)
+            max_val = torch.tensor(np.percentile(
+                v.reshape(-1).cpu(), 100),
+                                   device=v.device,
+                                   dtype=torch.float32)
         if self.certain_ratio_val is None:
             self.certain_ratio_val = cur_certain_ratio
+            self.max_val = max_val
         else:
             self.certain_ratio_val = self.certain_ratio_val + \
                 self.percentile_sigma * (cur_certain_ratio - self.certain_ratio_val)
+            self.max_val = self.max_val + \
+                self.max_val * self.percentile_sigma * (max_val - self.max_val)
 
     
 class FP8LinearSoftmax(Module):
@@ -705,11 +715,12 @@ class FP8LinearSoftmax(Module):
         super(FP8LinearSoftmax, self).__init__()
         self.output_bit = output_bit
         self.quant_mode = quant_mode
-        self.base = 2
+        self.base = torch.e
         self.head_dim = head_dim
         self.num_heads = num_heads
         self.threshold = 240.
         self.x_th = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(math.log(self.threshold, self.base)))).cuda() # define a threshold value(per head), the value is averaged by batch
+        self.mask_val = torch.nn.Parameter(torch.empty(self.num_heads).fill_(torch.tensor(-128.))).cuda()
         self.x_th_ratio = x_th_ratio
         self.alpha = 1.
         self.beta = 0.99 # EMA
@@ -724,24 +735,46 @@ class FP8LinearSoftmax(Module):
             logger.info("Force dequantize softmax")
             self.quant_mode = 'none'
             
-    def convert_to_8_bit_int(self, x):
-        x = torch.clamp(x, min=torch.iinfo(torch.int8).min, max=torch.iinfo(torch.int8).max).to(torch.int8).to(torch.float32)
+    def convert_to_8_bit_int(self, x, verbose=False):
+        if verbose:
+            if x.max() > 127 or x.min() < -128:
+                print('8 bit int overflow!')
+                print(f'{torch.quantile(x, 0.999)} {torch.quantile(x, 0.001)}')
+        x = round_ste.apply(torch.clamp(x, min=torch.iinfo(torch.int8).min, max=torch.iinfo(torch.int8).max)).to(torch.float32)
         return x
     
-    def convert_to_16_bit_int(self, x):
-        x = torch.clamp(x, min=torch.iinfo(torch.int16).min, max=torch.iinfo(torch.int16).max).to(torch.int16).to(torch.float32)
+    def convert_to_16_bit_int(self, x, verbose=False):
+        if verbose:
+            if x.max() > 32767 or x.min() < -32768:
+                print('16 bit int overflow!')
+                print(f'{torch.quantile(x, 0.999)} {torch.quantile(x, 0.001)}')
+        x = round_ste.apply((torch.clamp(x, min=torch.iinfo(torch.int16).min, max=torch.iinfo(torch.int16).max))).to(torch.float32)
         return x
     
-    def convert_to_24_bit_int(self, x):
-        x = torch.clamp(x, min=torch.iinfo(torch.int32).min / (2**8), max=(torch.iinfo(torch.int32).max + 1) / (2**8) -1).to(torch.int32).to(torch.float32)
+    def convert_to_24_bit_int(self, x, verbose=False):
+        if verbose:
+            if x.max() > 8388607 or x.min() < -8388608:
+                print('24 bit int overflow!')
+                print(f'{torch.quantile(x, 0.999)} {torch.quantile(x, 0.001)}')
+        x = round_ste.apply(torch.clamp(x, min=torch.iinfo(torch.int32).min / (2**8), max=(torch.iinfo(torch.int32).max + 1) / (2**8) -1)).to(torch.float32)
         return x
         
-    def convert_to_32_bit_int(self, x):
-        x = torch.clamp(x, min=torch.iinfo(torch.int32).min, max=torch.iinfo(torch.int32).max).to(torch.int32).to(torch.float32)
+    def convert_to_32_bit_int(self, x, verbose=False):
+        if verbose:
+            if x.max() > 2147483647 or x.min() < -2147483648:
+                print('32 bit int overflow!')
+                print(f'{torch.quantile(x, 0.999)} {torch.quantile(x, 0.001)}')
+        x = round_ste.apply(torch.clamp(x, min=torch.iinfo(torch.int32).min, max=torch.iinfo(torch.int32).max)).to(torch.float32)
         return x
         
-    def convert_to_32_bit_pseudo_int(self, x, shift=10): # default as 1,21,10
-        x = (torch.clamp(x, min=(torch.iinfo(torch.int32).min) / (2**shift), max=(torch.iinfo(torch.int32).max) / (2**shift)) * (2 ** shift)).to(torch.int32).to(torch.float32) / (2 ** shift)
+    def convert_to_32_bit_pseudo_int(self, x, shift=10, verbose=False): # default as 1,21,10
+        if verbose:
+            if x.max() > 2147483647 / (2**shift) or x.min() < -2147483648 / (2**shift):
+                print('32 bit pseudo int overflow!')
+                print(f'{torch.quantile(x, 0.999)} {torch.quantile(x, 0.001)}')
+        x = round_ste.apply(
+            torch.clamp(x, min=(torch.iinfo(torch.int32).min) / (2**shift), max=(torch.iinfo(torch.int32).max) / (2**shift)) * (2 ** shift)
+        ).to(torch.float32) / (2 ** shift)
         return x
             
     def convert_to_16_bit(self, x):
@@ -757,14 +790,12 @@ class FP8LinearSoftmax(Module):
         # return a attn * v and attn * v scaling factor
         # attn_weights: [batch_size * num_heads, seq_len, seq_len]
         # v: [batch_size * num_heads, seq_len, head_dim]
+        # print('original output: ', torch.softmax(attn_weights, dim=-1) @ v)
         
         # update the threshold value when training
         if self.training:
             self.observer.update(attn_weights)
             self.shifter = torch.max(torch.tensor(0.), self.observer.certain_ratio_val - torch.tensor(math.log(self.threshold, self.base)))
-        else:
-            print(f"observer certain ratio: {self.observer.certain_ratio_val}")
-            print(f"shift value: {self.shifter}")
         
         if self.quant_mode == 'none':
             attn_probs = utils.softmax(attn_weights, dim=-1, onnx_trace=False)
@@ -775,27 +806,27 @@ class FP8LinearSoftmax(Module):
                 "unsupported quant mode: {}".format(self.quant_mode)
         
         _, src_len, tgt_len = attn_weights.shape[0], attn_weights.shape[1], attn_weights.shape[2]
-        attn_weights = attn_weights.view(-1, self.num_heads, src_len, tgt_len) # (b, h_num, s, s)
-        v = v.view(-1, self.num_heads, tgt_len, self.head_dim) # (b, h_num, s, d)
-          
-        # quantize attn_weights & v to FP8
+        
+        # quantize attn_weights & v to int8
         attn_weights_int = self.convert_to_8_bit_int(attn_weights / attn_s)
         attn_weights_int = (attn_weights_int - self.convert_to_8_bit_int(self.shifter / attn_s))
-        attn_weights = attn_s * attn_weights_int
-        
         v_int = self.convert_to_8_bit_int(v / v_s)
-        x_th_int = self.convert_to_8_bit_int(self.x_th / attn_s)
         
-        attn_weights = self.quantizer_S1E4M3(attn_weights)
+        attn_weights_int = attn_weights_int.view(-1, self.num_heads, src_len, tgt_len) # (b, h_num, s, s)
+        v_int = v_int.view(-1, self.num_heads, tgt_len, self.head_dim) # (b, h_num, s, d)
 
-        mask = attn_weights > self.x_th.view(-1, self.num_heads, 1, 1) # mask: (b, h_num, s, s)
+        x_th_int = self.convert_to_8_bit_int(self.x_th / attn_s)
+
+        mask = attn_weights_int > x_th_int.view(-1, self.num_heads, 1, 1) # mask: (b, h_num, s, s)
+        padding_mask = attn_weights_int <= self.mask_val.view(-1, self.num_heads, 1, 1).cuda()
         k = self.convert_to_16_bit_int(self.lambda_k * torch.exp(self.x_th))
         b = self.convert_to_16_bit_int((1 - self.lambda_k * self.x_th) * torch.exp(self.x_th))
         b_div_ks = self.convert_to_8_bit_int((1 / self.lambda_k - self.x_th) / attn_s)
 
         sparse_attn_weights = mask * attn_weights_int
-        dense_attn_weights = torch.masked_fill(attn_weights, mask, float('-inf'))
-
+        dense_attn_weights = torch.masked_fill(attn_s * attn_weights_int, mask, float('-inf'))
+        dense_attn_weights = torch.masked_fill(self.quantizer_S1E4M3(dense_attn_weights), padding_mask, float('-inf'))
+        
         # (h) -> (1, h, 1, 1)
         k = k.view(-1, self.num_heads, 1, 1)
         b = b.view(-1, self.num_heads, 1, 1)
@@ -804,22 +835,22 @@ class FP8LinearSoftmax(Module):
         dense_attn_weights_exp = torch.pow(self.base, dense_attn_weights) # (b, h_num, s, s)
         dense_attn_weights_exp = self.quantizer_S1E4M3(dense_attn_weights_exp)
         dense_attn = dense_attn_weights_exp @ v_int
-        dense_attn = self.convert_to_32_bit_pseudo_int(dense_attn)
+        dense_attn = self.convert_to_16_bit(dense_attn)
         
         sparse_attn = ((sparse_attn_weights + mask * (b_div_ks)) @ v_int) # (b, h_num, s, s) x (b, h_num, s, dim) -> (b, h_num, s, dim)
-        sparse_attn = self.convert_to_32_bit_pseudo_int(sparse_attn)
+        sparse_attn = self.convert_to_16_bit(sparse_attn)
         sparse_attn = k * attn_s * sparse_attn # mult along the head dim
-        sparse_attn = self.convert_to_32_bit_pseudo_int(sparse_attn)
+        sparse_attn = self.convert_to_16_bit(sparse_attn)
         
         total_attn = dense_attn + sparse_attn
-        total_attn = self.convert_to_32_bit_pseudo_int(total_attn)
+        total_attn = self.convert_to_16_bit(total_attn)
 
-        denominator = self.convert_to_32_bit_pseudo_int(torch.sum(dense_attn_weights_exp, dim=-1, keepdim=True)) \
-                        + self.convert_to_32_bit_pseudo_int(torch.sum((sparse_attn_weights) * k * attn_s, dim=-1, keepdim=True)) \
-                        + self.convert_to_32_bit_pseudo_int(torch.sum(b * mask, dim=-1, keepdim=True))
-        denominator = self.convert_to_32_bit_pseudo_int(denominator)
+        denominator = self.convert_to_16_bit(torch.sum(dense_attn_weights_exp, dim=-1, keepdim=True)) \
+                        + self.convert_to_16_bit(torch.sum((sparse_attn_weights) * k * attn_s, dim=-1, keepdim=True)) \
+                        + self.convert_to_16_bit(torch.sum(b * mask, dim=-1, keepdim=True))
+        denominator = self.convert_to_16_bit(denominator)
         
-        output = total_attn / (denominator + 2**-10)
+        output = total_attn / (denominator + 1)
         output = self.convert_to_8_bit_int(output)
         output = output * v_s
         
